@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   goreleaser:
-    runs-on: blacksmith-2vcpu-ubuntu-2204
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
