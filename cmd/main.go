@@ -5,12 +5,13 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/nirmata/kyverno-mcp/pkg/tools"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/nirmata/kyverno-mcp/pkg/tools"
 
 	"k8s.io/klog/v2"
 

@@ -8,11 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nirmata/kyverno-mcp/pkg/common"
 	kyverno "github.com/nirmata/kyverno-mcp/pkg/kyverno-cli"
-
-	// Add import for Kyverno engine API to filter responses
-	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/commands/apply"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -36,18 +32,27 @@ func defaultPolicies() []byte {
 	return []byte(combinedPolicy)
 }
 
-func applyPolicy(policyKey string, namespace string, gitBranch string, namespaceExclude string) (string, error) {
+// cleanupFile removes the specified file from disk.
+func cleanupFile(name string) {
+	_ = os.Remove(name)
+}
+
+func applyPolicy(payload string) (string, error) {
 	// Select the appropriate embedded policy content based on the requested key
-	var policyData []byte
-	switch policyKey {
-	case "pod-security":
-		policyData = podSecurityPolicy
-	case "rbac-best-practices":
-		policyData = rbacBestPracticesPolicy
-	case "kubernetes-best-practices":
-		policyData = kubernetesBestPracticesPolicy
-	default:
-		policyData = defaultPolicies()
+	policyData := defaultPolicies()
+
+	// Create a resource file from the payload
+	tmpResourceFile, err := os.CreateTemp("", "kyverno-resource-*.yaml")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp resource file: %w", err)
+	}
+	defer cleanupFile(tmpResourceFile.Name())
+
+	if _, err := tmpResourceFile.WriteString(payload); err != nil {
+		if cerr := tmpResourceFile.Close(); cerr != nil {
+			klog.ErrorS(cerr, "failed to close resource temp file after write error")
+		}
+		return "", fmt.Errorf("failed to write resource payload to temp file: %w", err)
 	}
 
 	// Create a uniquely named temporary file to avoid collisions between concurrent requests.
@@ -59,9 +64,7 @@ func applyPolicy(policyKey string, namespace string, gitBranch string, namespace
 	// Ensure the file is cleaned up after we have finished processing.
 	// The cleanup is deferred *after* the temp file is successfully created so that
 	// the file is always removed regardless of subsequent failures.
-	defer func(name string) {
-		_ = os.Remove(name)
-	}(tmpFile.Name())
+	defer cleanupFile(tmpFile.Name())
 
 	// Write the selected policy content to the temporary file
 	if _, err := tmpFile.Write(policyData); err != nil {
@@ -77,12 +80,11 @@ func applyPolicy(policyKey string, namespace string, gitBranch string, namespace
 	}
 
 	applyCommandConfig := &apply.ApplyCommandConfig{
-		PolicyPaths:  []string{tmpFile.Name()},
-		Cluster:      true,
-		Namespace:    namespace,
-		PolicyReport: true,
-		OutputFormat: "json",
-		GitBranch:    gitBranch,
+		PolicyPaths:   []string{tmpFile.Name()},
+		ResourcePaths: []string{tmpResourceFile.Name()},
+		PolicyReport:  true,
+		OutputFormat:  "json",
+		GitBranch:     "main",
 	}
 
 	result, err := kyverno.ApplyCommandHelper(applyCommandConfig)
@@ -90,19 +92,7 @@ func applyPolicy(policyKey string, namespace string, gitBranch string, namespace
 		return "", fmt.Errorf("failed to apply policy: %w", err)
 	}
 
-	// Build a set of namespaces to exclude from the policy report results.
-	excludedNS := common.ParseNamespaceExcludes(namespaceExclude)
-
-	// Filter out engine responses that belong to excluded namespaces.
-	var filteredEngineResponses []engineapi.EngineResponse
-	for _, er := range result.EngineResponses {
-		if _, found := excludedNS[er.Resource.GetNamespace()]; found {
-			continue
-		}
-		filteredEngineResponses = append(filteredEngineResponses, er)
-	}
-
-	results := kyverno.BuildPolicyReportResults(false, filteredEngineResponses...)
+	results := kyverno.BuildPolicyReportResults(false, result.EngineResponses...)
 	jsonResults, err := json.MarshalIndent(results, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal policy report results: %w", err)
@@ -115,11 +105,8 @@ func ApplyPolicies(s *server.MCPServer) {
 	klog.InfoS("Registering tool: apply_policies")
 	applyPoliciesTool := mcp.NewTool(
 		"apply_policies",
-		mcp.WithDescription(`Scan the cluster resources for policy violations with provided policies or default policy sets. Use "all" to scan all namespaces. If no namespace is provided i.e. "", the policies will be applied to the default namespace.`),
-		mcp.WithString("policySets", mcp.Description(`Policy set key: pod-security, rbac-best-practices, kubernetes-best-practices, all (default: all).`)),
-		mcp.WithString("namespace", mcp.Description(`Namespace to apply policies to (default: default)`)),
-		mcp.WithString("gitBranch", mcp.Description(`Git branch to apply policies from (default: main)`)),
-		mcp.WithString("namespace_exclude", mcp.Description(`Namespace to exclude from applying policies to (default: kube-system, kyverno)`)),
+		mcp.WithDescription(`Validates payloads against Kyverno policy sets. The payloads should contain a list of YAML resources in string format. The resources are validated against the specified policy set, or the default policy sets if none is specified.`),
+		mcp.WithString("payloads", mcp.Description(`K8s resources in YAML format to apply policies against.`)),
 	)
 
 	s.AddTool(applyPoliciesTool, func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -128,27 +115,12 @@ func ApplyPolicies(s *server.MCPServer) {
 			return mcp.NewToolResultError("Error: invalid arguments format"), nil
 		}
 
-		policySets := "all"
-		if args["policySets"] != nil {
-			policySets = args["policySets"].(string)
+		payloads := ""
+		if args["payloads"] != nil {
+			payloads = args["payloads"].(string)
 		}
 
-		namespace := ""
-		if args["namespace"] != nil {
-			namespace = args["namespace"].(string)
-		}
-
-		gitBranch := "main"
-		if args["gitBranch"] != nil {
-			gitBranch = args["gitBranch"].(string)
-		}
-
-		namespaceExclude := "kube-system,kyverno"
-		if args["namespace_exclude"] != nil {
-			namespaceExclude = args["namespace_exclude"].(string)
-		}
-
-		results, err := applyPolicy(policySets, namespace, gitBranch, namespaceExclude)
+		results, err := applyPolicy(payloads)
 		if err != nil {
 			// Surface the error back to the MCP client without terminating the server.
 			return mcp.NewToolResultError(err.Error()), nil
