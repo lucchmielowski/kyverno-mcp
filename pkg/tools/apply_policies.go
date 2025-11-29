@@ -10,9 +10,6 @@ import (
 
 	kyverno "github.com/nirmata/kyverno-mcp/pkg/kyverno-cli"
 
-	// Add import for Kyverno engine API to filter responses
-	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
-
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/commands/apply"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -35,6 +32,11 @@ func defaultPolicies() []byte {
 	return []byte(combinedPolicy)
 }
 
+// cleanupFile removes the specified file from disk.
+func cleanupFile(name string) {
+	_ = os.Remove(name)
+}
+
 func applyPolicy(payload string) (string, error) {
 	// Select the appropriate embedded policy content based on the requested key
 	policyData := defaultPolicies()
@@ -44,7 +46,8 @@ func applyPolicy(payload string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp resource file: %w", err)
 	}
-	defer os.Remove(tmpResourceFile.Name())
+	defer cleanupFile(tmpResourceFile.Name())
+
 	if _, err := tmpResourceFile.WriteString(payload); err != nil {
 		if cerr := tmpResourceFile.Close(); cerr != nil {
 			klog.ErrorS(cerr, "failed to close resource temp file after write error")
@@ -61,9 +64,7 @@ func applyPolicy(payload string) (string, error) {
 	// Ensure the file is cleaned up after we have finished processing.
 	// The cleanup is deferred *after* the temp file is successfully created so that
 	// the file is always removed regardless of subsequent failures.
-	defer func(name string) {
-		_ = os.Remove(name)
-	}(tmpFile.Name())
+	defer cleanupFile(tmpFile.Name())
 
 	// Write the selected policy content to the temporary file
 	if _, err := tmpFile.Write(policyData); err != nil {
@@ -78,8 +79,6 @@ func applyPolicy(payload string) (string, error) {
 		return "", fmt.Errorf("failed to close temp policy file: %w", err)
 	}
 
-	fmt.Println(tmpResourceFile.Name())
-
 	applyCommandConfig := &apply.ApplyCommandConfig{
 		PolicyPaths:   []string{tmpFile.Name()},
 		ResourcePaths: []string{tmpResourceFile.Name()},
@@ -93,13 +92,7 @@ func applyPolicy(payload string) (string, error) {
 		return "", fmt.Errorf("failed to apply policy: %w", err)
 	}
 
-	// Filter out engine responses that belong to excluded namespaces.
-	var filteredEngineResponses []engineapi.EngineResponse
-	for _, er := range result.EngineResponses {
-		filteredEngineResponses = append(filteredEngineResponses, er)
-	}
-
-	results := kyverno.BuildPolicyReportResults(false, filteredEngineResponses...)
+	results := kyverno.BuildPolicyReportResults(false, result.EngineResponses...)
 	jsonResults, err := json.MarshalIndent(results, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal policy report results: %w", err)
