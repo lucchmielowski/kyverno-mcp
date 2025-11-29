@@ -16,6 +16,9 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/mark3labs/mcp-go/server"
+
+	crlog "sigs.k8s.io/controller-runtime/pkg/log"
+	crzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
 // kubeconfigPath holds the path to the kubeconfig file supplied via the --kubeconfig flag.
@@ -31,6 +34,8 @@ var tlsCert string
 var tlsKey string
 
 func init() {
+	crlog.SetLogger(crzap.New(crzap.UseDevMode(true)))
+
 	flag.Usage = func() {
 		// Header
 		if _, err := fmt.Fprintf(flag.CommandLine.Output(), "\nKyverno MCP Server – a Model-Context-Protocol server for Kyverno\n"); err != nil {
