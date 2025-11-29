@@ -22,7 +22,7 @@ jobs:
     env:
       VERSION:  ${{ github.ref_name }}
       KO_PLATFORMS:   linux/amd64,linux/arm64
-      KO_DOCKER_REPO: ghcr.io/nirmata/kyverno-mcp
+      KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -101,4 +101,4 @@ jobs:
           COSIGN_EXPERIMENTAL: 1
         run: |
           cosign verify ${{ steps.ko-push.outputs.digest }} \
-            --certificate-identity-regexp="nirmata" --certificate-oidc-issuer-regexp="githubusercontent"
+            --certificate-identity-regexp="https://github.com/lucchmielowski/.*" --certificate-oidc-issuer-regexp="https://token.actions.githubusercontent.com"
