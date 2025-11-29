@@ -131,7 +131,6 @@ func main() {
 	tools.ApplyPolicies(s)
 	tools.Help(s)
 	tools.ShowViolations(s)
-	tools.ApplyCustomPolicies(s)
 
 	// Prefer HTTPS when TLS credentials are supplied. If not, fall back to plain HTTP.
 	if tlsCert != "" && tlsKey != "" {

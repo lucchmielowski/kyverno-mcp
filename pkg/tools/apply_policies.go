@@ -35,19 +35,9 @@ func defaultPolicies() []byte {
 	return []byte(combinedPolicy)
 }
 
-func applyPolicy(policyKey string, payload string, gitBranch string) (string, error) {
+func applyPolicy(payload string) (string, error) {
 	// Select the appropriate embedded policy content based on the requested key
-	var policyData []byte
-	switch policyKey {
-	case "pod-security":
-		policyData = podSecurityPolicy
-	case "rbac-best-practices":
-		policyData = rbacBestPracticesPolicy
-	case "kubernetes-best-practices":
-		policyData = kubernetesBestPracticesPolicy
-	default:
-		policyData = defaultPolicies()
-	}
+	policyData := defaultPolicies()
 
 	// Create a resource file from the payload
 	tmpResourceFile, err := os.CreateTemp("", "kyverno-resource-*.yaml")
@@ -95,7 +85,7 @@ func applyPolicy(policyKey string, payload string, gitBranch string) (string, er
 		ResourcePaths: []string{tmpResourceFile.Name()},
 		PolicyReport:  true,
 		OutputFormat:  "json",
-		GitBranch:     gitBranch,
+		GitBranch:     "main",
 	}
 
 	result, err := kyverno.ApplyCommandHelper(applyCommandConfig)
@@ -121,11 +111,9 @@ func applyPolicy(policyKey string, payload string, gitBranch string) (string, er
 func ApplyPolicies(s *server.MCPServer) {
 	klog.InfoS("Registering tool: apply_policies")
 	applyPoliciesTool := mcp.NewTool(
-		"apply_custom_policies",
-		mcp.WithDescription(`Scan the list of resources for policy violations with provided policies or default policy sets. Use "all" to scan all namespaces. If no namespace is provided i.e. "", the policies will be applied to the default namespace.`),
-		mcp.WithString("policySets", mcp.Description(`Policy set key: pod-security, rbac-best-practices, kubernetes-best-practices, all (default: all).`)),
-		mcp.WithString("gitBranch", mcp.Description(`Git branch to apply policies from (default: main)`)),
-		mcp.WithString("payloads", mcp.Description(`JSON payloads to apply policies on.`)),
+		"apply_policies",
+		mcp.WithDescription(`Validates payloads against Kyverno policy sets. The payloads should contain a list of YAML resources in string format. The resources are validated against the specified policy set, or the default policy sets if none is specified.`),
+		mcp.WithString("payloads", mcp.Description(`K8s resources in YAML format to apply policies against.`)),
 	)
 
 	s.AddTool(applyPoliciesTool, func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -134,22 +122,12 @@ func ApplyPolicies(s *server.MCPServer) {
 			return mcp.NewToolResultError("Error: invalid arguments format"), nil
 		}
 
-		policySets := "all"
-		if args["policySets"] != nil {
-			policySets = args["policySets"].(string)
-		}
-
-		gitBranch := "main"
-		if args["gitBranch"] != nil {
-			gitBranch = args["gitBranch"].(string)
-		}
-
 		payloads := ""
 		if args["payloads"] != nil {
 			payloads = args["payloads"].(string)
 		}
 
-		results, err := applyPolicy(policySets, payloads, gitBranch)
+		results, err := applyPolicy(payloads)
 		if err != nil {
 			// Surface the error back to the MCP client without terminating the server.
 			return mcp.NewToolResultError(err.Error()), nil
