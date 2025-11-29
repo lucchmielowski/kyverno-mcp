@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nirmata/kyverno-mcp/pkg/common"
 	kyverno "github.com/nirmata/kyverno-mcp/pkg/kyverno-cli"
 
 	// Add import for Kyverno engine API to filter responses
@@ -36,7 +35,7 @@ func defaultPolicies() []byte {
 	return []byte(combinedPolicy)
 }
 
-func applyPolicy(policyKey string, namespace string, gitBranch string, namespaceExclude string) (string, error) {
+func applyPolicy(policyKey string, payload string, gitBranch string) (string, error) {
 	// Select the appropriate embedded policy content based on the requested key
 	var policyData []byte
 	switch policyKey {
@@ -48,6 +47,19 @@ func applyPolicy(policyKey string, namespace string, gitBranch string, namespace
 		policyData = kubernetesBestPracticesPolicy
 	default:
 		policyData = defaultPolicies()
+	}
+
+	// Create a resource file from the payload
+	tmpResourceFile, err := os.CreateTemp("", "kyverno-resource-*.yaml")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp resource file: %w", err)
+	}
+	defer os.Remove(tmpResourceFile.Name())
+	if _, err := tmpResourceFile.WriteString(payload); err != nil {
+		if cerr := tmpResourceFile.Close(); cerr != nil {
+			klog.ErrorS(cerr, "failed to close resource temp file after write error")
+		}
+		return "", fmt.Errorf("failed to write resource payload to temp file: %w", err)
 	}
 
 	// Create a uniquely named temporary file to avoid collisions between concurrent requests.
@@ -76,13 +88,14 @@ func applyPolicy(policyKey string, namespace string, gitBranch string, namespace
 		return "", fmt.Errorf("failed to close temp policy file: %w", err)
 	}
 
+	fmt.Println(tmpResourceFile.Name())
+
 	applyCommandConfig := &apply.ApplyCommandConfig{
-		PolicyPaths:  []string{tmpFile.Name()},
-		Cluster:      true,
-		Namespace:    namespace,
-		PolicyReport: true,
-		OutputFormat: "json",
-		GitBranch:    gitBranch,
+		PolicyPaths:   []string{tmpFile.Name()},
+		ResourcePaths: []string{tmpResourceFile.Name()},
+		PolicyReport:  true,
+		OutputFormat:  "json",
+		GitBranch:     gitBranch,
 	}
 
 	result, err := kyverno.ApplyCommandHelper(applyCommandConfig)
@@ -90,15 +103,9 @@ func applyPolicy(policyKey string, namespace string, gitBranch string, namespace
 		return "", fmt.Errorf("failed to apply policy: %w", err)
 	}
 
-	// Build a set of namespaces to exclude from the policy report results.
-	excludedNS := common.ParseNamespaceExcludes(namespaceExclude)
-
 	// Filter out engine responses that belong to excluded namespaces.
 	var filteredEngineResponses []engineapi.EngineResponse
 	for _, er := range result.EngineResponses {
-		if _, found := excludedNS[er.Resource.GetNamespace()]; found {
-			continue
-		}
 		filteredEngineResponses = append(filteredEngineResponses, er)
 	}
 
@@ -114,12 +121,11 @@ func applyPolicy(policyKey string, namespace string, gitBranch string, namespace
 func ApplyPolicies(s *server.MCPServer) {
 	klog.InfoS("Registering tool: apply_policies")
 	applyPoliciesTool := mcp.NewTool(
-		"apply_policies",
-		mcp.WithDescription(`Scan the cluster resources for policy violations with provided policies or default policy sets. Use "all" to scan all namespaces. If no namespace is provided i.e. "", the policies will be applied to the default namespace.`),
+		"apply_custom_policies",
+		mcp.WithDescription(`Scan the list of resources for policy violations with provided policies or default policy sets. Use "all" to scan all namespaces. If no namespace is provided i.e. "", the policies will be applied to the default namespace.`),
 		mcp.WithString("policySets", mcp.Description(`Policy set key: pod-security, rbac-best-practices, kubernetes-best-practices, all (default: all).`)),
-		mcp.WithString("namespace", mcp.Description(`Namespace to apply policies to (default: default)`)),
 		mcp.WithString("gitBranch", mcp.Description(`Git branch to apply policies from (default: main)`)),
-		mcp.WithString("namespace_exclude", mcp.Description(`Namespace to exclude from applying policies to (default: kube-system, kyverno)`)),
+		mcp.WithString("payloads", mcp.Description(`JSON payloads to apply policies on.`)),
 	)
 
 	s.AddTool(applyPoliciesTool, func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -133,22 +139,17 @@ func ApplyPolicies(s *server.MCPServer) {
 			policySets = args["policySets"].(string)
 		}
 
-		namespace := ""
-		if args["namespace"] != nil {
-			namespace = args["namespace"].(string)
-		}
-
 		gitBranch := "main"
 		if args["gitBranch"] != nil {
 			gitBranch = args["gitBranch"].(string)
 		}
 
-		namespaceExclude := "kube-system,kyverno"
-		if args["namespace_exclude"] != nil {
-			namespaceExclude = args["namespace_exclude"].(string)
+		payloads := ""
+		if args["payloads"] != nil {
+			payloads = args["payloads"].(string)
 		}
 
-		results, err := applyPolicy(policySets, namespace, gitBranch, namespaceExclude)
+		results, err := applyPolicy(policySets, payloads, gitBranch)
 		if err != nil {
 			// Surface the error back to the MCP client without terminating the server.
 			return mcp.NewToolResultError(err.Error()), nil
